@@ -1,0 +1,20 @@
+{
+  "datapath": [
+    {"id": "Reg_e", "type": "Register", "label": "e"},
+    {"id": "Reg_r", "type": "Register", "label": "r"},
+    {"id": "Mux_r", "type": "Mux", "inputs": 2, "target": "Reg_r"},
+    {"id": "Reg_b", "type": "Register", "label": "b"},
+    {"id": "Mux_b", "type": "Mux", "inputs": 2, "target": "Reg_b"}
+  ],
+  "fsm": [
+    {"id": 0, "actions": [{"type": "Latch", "target": "Reg_r", "expression": "1"}], "next": {"type": "Goto", "target_id": 2}},
+    {"id": 2, "actions": [{"type": "Latch", "target": "Reg_b", "expression": "x"}], "next": {"type": "Goto", "target_id": 3}},
+    {"id": 3, "actions": [{"type": "Latch", "target": "Reg_e", "expression": "n"}], "next": {"type": "Goto", "target_id": 4}},
+    {"id": 4, "actions": [{"type": "Latch", "target": "Reg_i", "expression": "0"}], "next": {"type": "Goto", "target_id": 5}},
+    {"id": 5, "actions": [], "next": {"type": "Branch", "condition": "i < 8", "true_id": 6, "false_id": 1}},
+    {"id": 6, "actions": [{"type": "Latch", "target": "Reg_r", "expression": "r * b"}], "next": {"type": "Goto", "target_id": 8}},
+    {"id": 8, "actions": [{"type": "Latch", "target": "Reg_b", "expression": "b * b"}], "next": {"type": "Goto", "target_id": 7}},
+    {"id": 7, "actions": [{"type": "Latch", "target": "Reg_i", "expression": "i + 1"}], "next": {"type": "Goto", "target_id": 5}},
+    {"id": 1, "actions": [], "next": {"type": "Done"}}
+  ]
+}

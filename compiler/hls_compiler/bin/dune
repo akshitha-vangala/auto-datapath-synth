@@ -1,0 +1,4 @@
+(executable
+ (public_name hls_compiler)
+ (name main)
+ (libraries hls_compiler))

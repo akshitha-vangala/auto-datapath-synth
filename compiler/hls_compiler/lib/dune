@@ -1,0 +1,8 @@
+(library
+ (name hls_compiler)
+ )
+
+(ocamllex lexer)
+
+(menhir
+ (modules parser))
