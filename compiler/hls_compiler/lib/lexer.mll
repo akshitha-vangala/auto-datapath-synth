@@ -17,18 +17,24 @@ rule read = parse
   | "if"     { IF }
   | "else"   { ELSE }
   | "for"    { FOR }
+  | "while"  { WHILE }
   
   | int      { INT (int_of_string (Lexing.lexeme lexbuf)) }
   | id       { IDENT (Lexing.lexeme lexbuf) }
+  
+  (* Multi-character operators MUST be matched before single-char prefixes.
+     ">>" must be tried before ">", "==" must be tried before "=". *)
+  | "=="     { EQ }
+  | ">>"     { SHR }
+  | "<"      { LT }
+  | ">"      { GT }
+  | "="      { EQUALS }
   
   (* Math & Logic *)
   | "+"      { PLUS }
   | "-"      { MINUS }
   | "*"      { STAR }
-  | "=="     { EQ }
-  | "<"      { LT }
-  | ">"      { GT }
-  | "="      { EQUALS }
+  | "%"      { PERCENT }
   
   (* Syntax & Brackets *)
   | ";"      { SEMICOLON }

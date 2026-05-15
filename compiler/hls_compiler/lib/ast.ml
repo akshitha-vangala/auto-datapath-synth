@@ -1,6 +1,7 @@
 (* lib/ast.ml *)
 
-(* Expanded to include comparators for if-statements and loops *)
+(* Expanded to include comparators for if-statements and loops,
+   plus bitwise/modulo operators for the Square-and-Multiply algorithm. *)
 type op = 
   | Add  (* Maps to hardware Adder *)
   | Sub  (* Maps to hardware Subtractor *)
@@ -8,6 +9,8 @@ type op =
   | Eq   (* Maps to Comparator (==) *)
   | Lt   (* Maps to Comparator (<) *)
   | Gt   (* Maps to Comparator (>) *)
+  | Shr  (* Maps to Arithmetic Right-Shift unit (>>) *)
+  | Mod  (* Maps to Modulo / AND unit (%) *)
 
 type expr =
   | Var of string
@@ -25,3 +28,6 @@ and stmt =
   
   (* for (iterator = start; iterator < end) { loop_block } *)
   | For of string * expr * expr * block
+
+  (* while (condition) { loop_block } *)
+  | While of expr * block
