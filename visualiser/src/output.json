@@ -1,0 +1,21 @@
+{
+  "meta": {"compiler": "hls_compiler", "algorithm": "square_and_multiply"},
+  "datapath": [
+    {"id": "Reg_e", "type": "Register", "label": "e"},
+    {"id": "Reg_r", "type": "Register", "label": "r"},
+    {"id": "Mux_r", "type": "Mux", "inputs": 2, "target": "Reg_r"},
+    {"id": "Reg_b", "type": "Register", "label": "b"},
+    {"id": "Mux_b", "type": "Mux", "inputs": 2, "target": "Reg_b"}
+  ],
+  "fsm": [
+    {"id": 0, "label": "LD_R", "signals": {"Ld_R": 1}, "next": {"type": "Goto", "target_id": 2}},
+    {"id": 2, "label": "LD_B", "signals": {"Ld_B": 1}, "next": {"type": "Goto", "target_id": 3}},
+    {"id": 3, "label": "LD_E", "signals": {"Ld_E": 1}, "next": {"type": "Goto", "target_id": 4}},
+    {"id": 4, "label": "FOR_INIT_I", "signals": {"Ld_I": 1}, "next": {"type": "Goto", "target_id": 5}},
+    {"id": 5, "label": "FOR_CHECK", "signals": {}, "next": {"type": "Branch", "condition": {"kind": "expr", "expr": "i < 8"}, "true_id": 6, "false_id": 1}},
+    {"id": 6, "label": "LD_R", "signals": {"Ld_R": 1, "MuxSel_R": 1, "ALU_Mul": 1}, "next": {"type": "Goto", "target_id": 8}},
+    {"id": 8, "label": "LD_B", "signals": {"Ld_B": 1, "MuxSel_B": 1, "ALU_Mul": 1}, "next": {"type": "Goto", "target_id": 7}},
+    {"id": 7, "label": "FOR_INC_I", "signals": {"Ld_I": 1, "MuxSel_I": 1}, "next": {"type": "Goto", "target_id": 5}},
+    {"id": 1, "label": "HALT", "signals": {}, "next": {"type": "Done"}}
+  ]
+}
