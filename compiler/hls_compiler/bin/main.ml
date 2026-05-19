@@ -10,12 +10,14 @@ let rec string_of_expr = function
   | Ast.BinOp (Ast.Eq, e1, e2) -> "BinOp(Eq, " ^ string_of_expr e1 ^ ", " ^ string_of_expr e2 ^ ")"
   | Ast.BinOp (Ast.Lt, e1, e2) -> "BinOp(Lt, " ^ string_of_expr e1 ^ ", " ^ string_of_expr e2 ^ ")"
   | Ast.BinOp (Ast.Gt, e1, e2) -> "BinOp(Gt, " ^ string_of_expr e1 ^ ", " ^ string_of_expr e2 ^ ")"
+  | Ast.BinOp (Ast.Shr, e1, e2) -> "BinOp(Shr, " ^ string_of_expr e1 ^ ", " ^ string_of_expr e2 ^ ")"
+  | Ast.BinOp (Ast.Mod, e1, e2) -> "BinOp(Mod, " ^ string_of_expr e1 ^ ", " ^ string_of_expr e2 ^ ")"
 
 let rec string_of_stmt = function
   | Ast.Assign (id, expr) -> "Assign(\"" ^ id ^ "\", " ^ string_of_expr expr ^ ")"
   | Ast.If (cond, tb, fb) -> "If(" ^ string_of_expr cond ^ ", " ^ string_of_block tb ^ ", " ^ string_of_block fb ^ ")"
   | Ast.For (id, start, stop, blk) -> "For(\"" ^ id ^ "\", " ^ string_of_expr start ^ ", " ^ string_of_expr stop ^ ", " ^ string_of_block blk ^ ")"
-
+  | Ast.While (cond, blk) -> "While(" ^ string_of_expr cond ^ ", " ^ string_of_block blk ^ ")"
 and string_of_block blk =
   "[\n    " ^ String.concat "\n    " (List.map string_of_stmt blk) ^ "\n  ]"
 

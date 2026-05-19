@@ -56,7 +56,7 @@ let schedule_asap prog =
         let new_env = (id, cycle) :: env in
         let op = { cycle; target = id; expr } in
         walk new_env (op :: acc) rest
-    | (If _ | For _) :: _ -> 
+    | (If _ | For _ | While _) :: _ -> 
         failwith "FSM logic not yet implemented for ASAP"
   in
   walk [] [] prog
@@ -67,7 +67,7 @@ let schedule_constrained limit prog =
   let all_targets = List.map (fun stmt -> 
     match stmt with
     | Assign (id, _) -> id
-    | If _ | For _ -> failwith "FSM logic not yet implemented"
+    | If _ | For _ | While _ -> failwith "FSM logic not yet implemented"
   ) prog in
 
   let rec step cycle avail pending acc =
@@ -77,7 +77,7 @@ let schedule_constrained limit prog =
         let ready, blocked = List.partition (fun stmt -> 
           match stmt with
           | Assign (_, expr) -> is_ready expr avail all_targets
-          | If _ | For _ -> failwith "FSM logic not yet implemented"
+          | If _ | For _ | While _ -> failwith "FSM logic not yet implemented"
         ) pending in
         
         if ready = [] then
@@ -97,7 +97,7 @@ let schedule_constrained limit prog =
         let new_ops = List.map (fun stmt -> 
           match stmt with
           | Assign (id, expr) -> { cycle; target = id; expr }
-          | If _ | For _ -> failwith "FSM logic not yet implemented"
+          | If _ | For _ | While _ -> failwith "FSM logic not yet implemented"
         ) to_schedule in
         
         let new_avail = avail @ (List.map (fun op -> op.target) new_ops) in
@@ -112,5 +112,3 @@ let schedule config prog =
   match config.mode with
   | Performance -> schedule_asap prog
   | Efficiency limit -> schedule_constrained limit prog
-
-

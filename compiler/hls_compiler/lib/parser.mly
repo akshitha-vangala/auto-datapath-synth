@@ -14,7 +14,7 @@
 
 /* Operator precedence — lowest to highest.
    Comparisons bind most loosely, then additive, then multiplicative,
-   then shift, then modulo (same level as MUL in most languages). *)
+   then shift, then modulo (same level as MUL in most languages). */
 %left EQ LT GT
 %left PLUS MINUS
 %left STAR PERCENT
