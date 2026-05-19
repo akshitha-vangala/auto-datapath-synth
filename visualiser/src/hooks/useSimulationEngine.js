@@ -34,7 +34,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import hardwareSpec from './output.json';
+import hardwareSpec from '../output.json';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
