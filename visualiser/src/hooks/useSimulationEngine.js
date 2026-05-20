@@ -38,7 +38,7 @@ import hardwareSpec from '../output.json';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const PLAYBACK_INTERVAL_MS = 1000; // 1 clock cycle per second — readable pace
+const PLAYBACK_INTERVAL_MS = 2500; // 1 clock cycle per second — readable pace
 
 // Build a fast lookup map: stateId → FSM state object
 const FSM_MAP = Object.fromEntries(
