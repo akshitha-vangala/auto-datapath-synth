@@ -23,34 +23,18 @@ and string_of_block blk =
 
 let string_of_program prog = string_of_block prog
 
-(* Temporarily commented out until FSM synthesis is ready!
-let print_schedule title scheduled =
-  Printf.printf "\n--- %s ---\n" title;
-  List.iter (fun op ->
-    Printf.printf "Cycle %d: Latch Register '%s' = %s\n" 
-      op.Synthesis.cycle 
-      op.Synthesis.target 
-      (string_of_expr op.Synthesis.expr)
-  ) scheduled
-*)
-
 let () =
-  let input = "
-    r = 1;
-    b = x;
-    e = n;
-    for (i = 0; i < 8) {
-        r = r * b;
-        b = b * b;
-    }
-  " in
-  Printf.printf "--- INPUT CODE ---\n%s\n" input;
+  Printf.printf "--- READING FROM input.txt ---\n";
   
-  let lexbuf = Lexing.from_string input in
+  (* 1. Open the file created by the Node.js API *)
+  let in_channel = open_in "input.txt" in
+  
+  (* 2. Tell the lexer to read from this file *)
+  let lexbuf = Lexing.from_channel in_channel in
+  
   try
     let ast = Parser.prog Lexer.read lexbuf in
     
-    (* Let's print the AST so string_of_program is used! *)
     Printf.printf "--- GENERATED AST ---\n%s\n" (string_of_program ast);
     
     (* 1. Allocate physical Hardware *)
@@ -69,8 +53,18 @@ let () =
     Printf.fprintf oc "%s\n" json_output;
     close_out oc;
     
+    (* 4. Close the input file *)
+    close_in in_channel;
+    
     Printf.printf "\n[SUCCESS] Hardware synthesized and exported to output.json!\n";
 
   with
-  | Lexer.SyntaxError msg -> Printf.printf "Lexer Error: %s\n" msg
-  | Parser.Error -> Printf.printf "Parser Error near character %d\n" (Lexing.lexeme_start lexbuf)
+  | Lexer.SyntaxError msg -> 
+      close_in_noerr in_channel; (* Make sure file closes even on error *)
+      Printf.printf "Lexer Error: %s\n" msg
+  | Parser.Error -> 
+      close_in_noerr in_channel;
+      Printf.printf "Parser Error near character %d\n" (Lexing.lexeme_start lexbuf)
+  | e -> 
+      close_in_noerr in_channel;
+      raise e
