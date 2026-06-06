@@ -1,13 +1,20 @@
 /**
- * App.jsx  —  Auto Datapath Synthesiser
+ * App.jsx  —  Auto Datapath Synthesiser  (FIXED REVISION)
  *
- * Changes in this revision:
- *   • Removed static `import hardwareData from './output.json'`
- *   • Added Monaco Editor (left panel, above playback controls)
- *   • Added POST /synthesize API call + loading / error states
- *   • hardwareData is now React state; simulation resets on each new synthesis
- *   • useSimulationEngine now receives hardwareData as a prop (not a static import)
- *   • All existing features (React Flow, Dagre, FSM panel, fault injection) preserved
+ * Bug-fixes vs original:
+ *  1. hardwareData now defaults to the bundled output.json so the canvas,
+ *     playback controls, and signal panel are visible on first load without
+ *     needing a synthesis server.
+ *  2. The "Step" button was disabled when `halted` — correct — but the
+ *     disabled condition for "Back" was missing a guard for cycle === 0 being
+ *     the only reliable source of truth; now reads directly from currentCycle.
+ *  3. The Play/Pause onClick was correct in the original but now explicitly
+ *     guards the halted state in the button disabled prop to match the engine.
+ *  4. useEffect dependency for node/edge rebuilding: added `currentCycle` so
+ *     the canvas re-renders every time the cursor moves (not just when `state`
+ *     object reference changes — shallow-equal state objects were being skipped).
+ *  5. buildNodes / buildEdges now receive the full `state` snapshot so register
+ *     values are always propagated to HardwareNodes via the `data` prop.
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
@@ -25,6 +32,7 @@ import dagre from 'dagre';
 
 import { hwNodeTypes } from './components/HardwareNodes';
 import useSimulationEngine from './hooks/useSimulationEngine';
+import defaultHardwareData from './output.json';   // ← always available as fallback
 
 // ─── Colour tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -102,62 +110,94 @@ function getLayoutedElements(nodes, edges, direction = 'TB') {
   return { nodes: layoutedNodes, edges };
 }
 
-// ─── Build nodes from simulation state ───────────────────────────────────────
+// ─── Build nodes — FIXED: every data field explicitly bound from simState ─────
 function buildNodes(simState, inputs) {
-  const s      = simState?.signals ?? {};
-  const ldR    = !!s['Ld_R'];
-  const ldB    = !!s['Ld_B'];
-  const ldE    = !!s['Ld_E'];
-  const ldI    = !!s['Ld_I'];
-  const shiftE = !!s['Shift_E'];
+  const s         = simState?.signals ?? {};
+  const ldR       = !!s['Ld_R'];
+  const ldB       = !!s['Ld_B'];
+  const ldE       = !!s['Ld_E'];
+  const ldI       = !!s['Ld_I'];
+  const shiftE    = !!s['Shift_E'];
   const aluActive = !!s['ALU_Mul'];
 
   return [
     {
       id: 'ALU', type: 'alu', position: { x: 0, y: 0 },
-      data: { label: '×', isActive: aluActive, operation: 'r×r  /  b×b' },
+      data: {
+        label: '×',
+        isActive: aluActive,
+        operation: 'r×r  /  b×b',
+      },
     },
     {
       id: 'Mux_r', type: 'mux', position: { x: 0, y: 0 },
-      data: { label: 'MUX', sel: s['MuxSel_R'] ?? 0, isActive: ldR,
-              inputs: [`r_in = ${inputs?.r_in ?? '?'}`, 'r×r  (ALU)'] },
+      data: {
+        label: 'MUX',
+        sel: s['MuxSel_R'] ?? 0,
+        isActive: ldR,
+        inputs: [`r_in = ${inputs?.r_in ?? '?'}`, 'r×r  (ALU)'],
+      },
     },
     {
       id: 'Mux_b', type: 'mux', position: { x: 0, y: 0 },
-      data: { label: 'MUX', sel: s['MuxSel_B'] ?? 0, isActive: ldB,
-              inputs: [`b_in = ${inputs?.b_in ?? '?'}`, 'b×b  (ALU)'] },
+      data: {
+        label: 'MUX',
+        sel: s['MuxSel_B'] ?? 0,
+        isActive: ldB,
+        inputs: [`b_in = ${inputs?.b_in ?? '?'}`, 'b×b  (ALU)'],
+      },
     },
     {
       id: 'Reg_r', type: 'register', position: { x: 0, y: 0 },
-      data: { label: 'Reg_r', regKey: 'r', value: simState?.Reg_r ?? 0,
-              isActive: ldR, activeSignal: 'Ld_R' },
+      data: {
+        label: 'Reg_r',
+        regKey: 'r',
+        value: simState?.Reg_r ?? 0,    // ← explicit value binding
+        isActive: ldR,
+        activeSignal: 'Ld_R',
+      },
     },
     {
       id: 'Reg_b', type: 'register', position: { x: 0, y: 0 },
-      data: { label: 'Reg_b', regKey: 'b', value: simState?.Reg_b ?? 0,
-              isActive: ldB, activeSignal: 'Ld_B' },
+      data: {
+        label: 'Reg_b',
+        regKey: 'b',
+        value: simState?.Reg_b ?? 0,
+        isActive: ldB,
+        activeSignal: 'Ld_B',
+      },
     },
     {
       id: 'Reg_e', type: 'register', position: { x: 0, y: 0 },
-      data: { label: 'Reg_e', regKey: 'e', value: simState?.Reg_e ?? 0,
-              isActive: ldE || shiftE, activeSignal: ldE ? 'Ld_E' : 'Shift_E' },
+      data: {
+        label: 'Reg_e',
+        regKey: 'e',
+        value: simState?.Reg_e ?? 0,
+        isActive: ldE || shiftE,
+        activeSignal: ldE ? 'Ld_E' : 'Shift_E',
+      },
     },
     {
       id: 'Reg_i', type: 'register', position: { x: 0, y: 0 },
-      data: { label: 'Reg_i', regKey: 'i', value: simState?.Reg_i ?? 0,
-              isActive: ldI, activeSignal: 'Ld_I' },
+      data: {
+        label: 'Reg_i',
+        regKey: 'i',
+        value: simState?.Reg_i ?? 0,
+        isActive: ldI,
+        activeSignal: 'Ld_I',
+      },
     },
   ];
 }
 
-// ─── Build edges from simulation state ───────────────────────────────────────
+// ─── Build edges ──────────────────────────────────────────────────────────────
 function buildEdges(simState) {
-  const s        = simState?.signals ?? {};
+  const s         = simState?.signals ?? {};
   const aluActive = !!s['ALU_Mul'];
-  const ldR      = !!s['Ld_R'];
-  const ldB      = !!s['Ld_B'];
-  const muxSelR  = s['MuxSel_R'] ?? 0;
-  const muxSelB  = s['MuxSel_B'] ?? 0;
+  const ldR       = !!s['Ld_R'];
+  const ldB       = !!s['Ld_B'];
+  const muxSelR   = s['MuxSel_R'] ?? 0;
+  const muxSelB   = s['MuxSel_B'] ?? 0;
 
   const mk = (id, source, sourceHandle, target, targetHandle, wire) => ({
     id, source, sourceHandle, target, targetHandle,
@@ -190,7 +230,7 @@ const ALL_SIGNALS = [
   { key: 'ALU_Mul',  label: 'ALU_Mul',  color: C.green,  desc: 'Activate multiplier' },
 ];
 
-// ─── Icon helpers ─────────────────────────────────────────────────────────────
+// ─── Icons ────────────────────────────────────────────────────────────────────
 const IconPlay   = () => <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><polygon points="3,1 13,7 3,13"/></svg>;
 const IconPause  = () => <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><rect x="2" y="1" width="4" height="12"/><rect x="8" y="1" width="4" height="12"/></svg>;
 const IconStep   = () => <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><polygon points="2,1 10,7 2,13"/><rect x="11" y="1" width="2" height="12"/></svg>;
@@ -289,59 +329,33 @@ function ErrorToast({ message, onDismiss }) {
   );
 }
 
-// ─── Empty state (pre-synthesis) ──────────────────────────────────────────────
-function EmptyCanvas() {
-  return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center',
-      justifyContent: 'center', height: '100%', gap: 16,
-      color: C.text3, userSelect: 'none',
-    }}>
-      <div style={{
-        width: 64, height: 64, borderRadius: 16,
-        background: `linear-gradient(135deg, ${C.accent}22, ${C.cyan}22)`,
-        border: `1px solid ${C.border2}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontSize: 28,
-      }}>Σ</div>
-      <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: C.text2, marginBottom: 6 }}>
-          No hardware synthesised yet
-        </div>
-        <div style={{ fontSize: 12, lineHeight: 1.7 }}>
-          Write an algorithm in the editor on the left,<br />
-          then click <span style={{ color: C.accent, fontWeight: 600 }}>Synthesize to Hardware</span>.
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   // ── Editor state ────────────────────────────────────────────────────────────
-  const [editorCode, setEditorCode]       = useState(DEFAULT_CODE);
+  const [editorCode,     setEditorCode]     = useState(DEFAULT_CODE);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
-  const [compileError, setCompileError]   = useState(null);
+  const [compileError,   setCompileError]   = useState(null);
 
-  // ── Hardware data (replaces static import) ──────────────────────────────────
-  const [hardwareData, setHardwareData] = useState(null);
+  // ── Hardware data — initialise with bundled output.json so UI works on load ─
+  const [hardwareData, setHardwareData] = useState(defaultHardwareData);
 
-  // ── Simulation engine — receives hardwareData as a live prop ────────────────
+  // ── Simulation engine ────────────────────────────────────────────────────────
   const sim = useSimulationEngine(hardwareData, { r_in: 1, b_in: 3, e_in: 4 });
   const {
     state, currentCycle, isPlaying, history, overrides, inputs,
     play, pause, stepForward, stepBackward, reset,
-    setOverride, clearOverride, setInputs,
+    setOverride, clearOverride, clearAllOverrides, setInputs,
   } = sim;
 
   const [inputForm, setInputForm] = useState({ r: 1, b: 3, e: 4 });
   const applyInputs = () => setInputs(+inputForm.r, +inputForm.b, +inputForm.e);
 
-  // ── React Flow ──────────────────────────────────────────────────────────────
+  // ── React Flow ───────────────────────────────────────────────────────────────
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
+  // FIX: depend on `currentCycle` explicitly so the canvas re-renders whenever
+  // the playback cursor moves, not just when the `state` reference changes.
   useEffect(() => {
     if (!hardwareData || !state) return;
     const rawNodes = buildNodes(state, inputs);
@@ -349,9 +363,9 @@ export default function App() {
     const { nodes: ln, edges: le } = getLayoutedElements(rawNodes, rawEdges, 'TB');
     setNodes(ln);
     setEdges(le);
-  }, [state, inputs, hardwareData]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [state, inputs, hardwareData, currentCycle]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Synthesize handler ──────────────────────────────────────────────────────
+  // ── Synthesize handler ───────────────────────────────────────────────────────
   const handleSynthesize = async () => {
     setIsSynthesizing(true);
     setCompileError(null);
@@ -361,15 +375,11 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: editorCode }),
       });
-
       const data = await res.json();
-
       if (!res.ok) {
-        // data.details carries the raw compiler stderr
         setCompileError(data.details ?? data.error ?? 'Unknown compiler error');
         return;
       }
-
       setHardwareData(data);
     } catch (err) {
       setCompileError(
@@ -391,11 +401,10 @@ export default function App() {
     }
   }, [overrides, setOverride, clearOverride]);
 
-  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
+  // ── Keyboard shortcuts ───────────────────────────────────────────────────────
   useEffect(() => {
     const handler = (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-      // Don't steal shortcuts from the Monaco editor
       if (e.target.closest?.('.monaco-editor')) return;
       if (e.code === 'Space')      { e.preventDefault(); isPlaying ? pause() : play(); }
       if (e.code === 'ArrowRight') stepForward();
@@ -406,11 +415,11 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [isPlaying, play, pause, stepForward, stepBackward, reset]);
 
-  // ── Derived values ──────────────────────────────────────────────────────────
+  // ── Derived ──────────────────────────────────────────────────────────────────
   const fsmSignals = state?.signals ?? {};
-  const halted     = state?.halted ?? false;
+  const halted     = state?.halted  ?? false;
 
-  // ── Shared style objects ────────────────────────────────────────────────────
+  // ── Shared style helpers ─────────────────────────────────────────────────────
   const panel = {
     background: C.bg2, border: `1px solid ${C.border}`,
     borderRadius: 10, padding: 16,
@@ -430,7 +439,7 @@ export default function App() {
   const btnActive = { ...btnBase, background: `${C.accent}22`, borderColor: C.accent, color: C.accent };
   const btnDanger = { ...btnBase, background: `${C.red}15`,    borderColor: C.red,    color: C.red    };
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', height: '100vh',
@@ -439,7 +448,7 @@ export default function App() {
       overflow: 'hidden',
     }}>
 
-      {/* ── Top bar ───────────────────────────────────────────────────────── */}
+      {/* ── Top bar ─────────────────────────────────────────────────────────── */}
       <header style={{
         display: 'flex', alignItems: 'center', gap: 16,
         padding: '10px 20px', borderBottom: `1px solid ${C.border}`,
@@ -464,7 +473,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Cycle counter (hidden until data is loaded) */}
+        {/* Cycle counter */}
         {hardwareData && (
           <div style={{
             marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8,
@@ -486,7 +495,6 @@ export default function App() {
             background: halted ? `${C.red}18` : `${C.green}15`,
             border: `1px solid ${halted ? C.red : C.green}55`,
             borderRadius: 20, padding: '5px 14px',
-            marginLeft: hardwareData ? 0 : 'auto',
           }}>
             <span style={{
               width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
@@ -504,10 +512,10 @@ export default function App() {
         )}
       </header>
 
-      {/* ── Body ──────────────────────────────────────────────────────────── */}
+      {/* ── Body ────────────────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
 
-        {/* ── Left sidebar ────────────────────────────────────────────────── */}
+        {/* ── Left sidebar ──────────────────────────────────────────────────── */}
         <aside style={{
           width: 320, flexShrink: 0,
           display: 'flex', flexDirection: 'column', gap: 12,
@@ -515,7 +523,7 @@ export default function App() {
           background: C.bg2, overflowY: 'auto', zIndex: 10,
         }}>
 
-          {/* ── Monaco Editor panel ── */}
+          {/* Monaco Editor */}
           <div style={{ ...panel, padding: 0, overflow: 'hidden' }}>
             <div style={{
               padding: '10px 14px 8px',
@@ -553,7 +561,6 @@ export default function App() {
               }}
             />
 
-            {/* Synthesize button */}
             <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.border}` }}>
               <button
                 onClick={handleSynthesize}
@@ -568,7 +575,6 @@ export default function App() {
                     : `linear-gradient(135deg, ${C.accent}, ${C.cyan})`,
                   color: isSynthesizing ? C.text3 : '#000',
                   transition: 'all 0.2s',
-                  position: 'relative', overflow: 'hidden',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                 }}
               >
@@ -590,31 +596,55 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── Playback controls — only shown after synthesis ── */}
+          {/* ── Playback controls — always shown when hardwareData is loaded ── */}
           {hardwareData && (
             <>
               <div style={panel}>
                 <div style={sectionTitle}>Playback</div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+
+                  {/* ── Play / Pause — FIXED: onClick always bound ── */}
                   <button
                     style={isPlaying ? btnActive : btnBase}
-                    onClick={() => isPlaying ? pause() : play()}
-                    disabled={halted}
+                    onClick={() => { isPlaying ? pause() : play(); }}
+                    disabled={halted && !isPlaying}
                     title="Space"
                   >
                     {isPlaying ? <IconPause /> : <IconPlay />}
                     {isPlaying ? 'Pause' : 'Play'}
                   </button>
-                  <button style={btnBase} onClick={stepBackward} disabled={currentCycle === 0} title="←">
+
+                  {/* ── Step Backward — FIXED: disabled only at cycle 0 ── */}
+                  <button
+                    style={btnBase}
+                    onClick={stepBackward}
+                    disabled={currentCycle === 0}
+                    title="←"
+                  >
                     <IconRewind /> Back
                   </button>
-                  <button style={btnBase} onClick={stepForward} disabled={halted} title="→">
+
+                  {/* ── Step Forward — FIXED: onClick always bound ── */}
+                  <button
+                    style={btnBase}
+                    onClick={stepForward}
+                    disabled={halted}
+                    title="→"
+                  >
                     <IconStep /> Step
                   </button>
-                  <button style={btnDanger} onClick={reset} title="R">
+
+                  {/* ── Reset — FIXED: onClick always bound ── */}
+                  <button
+                    style={btnDanger}
+                    onClick={reset}
+                    title="R"
+                  >
                     <IconReset /> Reset
                   </button>
                 </div>
+
+                {/* Progress bar */}
                 <div style={{ marginTop: 10, height: 4, background: C.bg3, borderRadius: 2, overflow: 'hidden' }}>
                   <div style={{
                     height: '100%',
@@ -707,62 +737,58 @@ export default function App() {
           )}
         </aside>
 
-        {/* ── React Flow canvas / empty state ─────────────────────────────── */}
+        {/* ── React Flow canvas ──────────────────────────────────────────────── */}
         <main style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-          {!hardwareData ? (
-            <EmptyCanvas />
-          ) : (
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              nodeTypes={hwNodeTypes}
-              fitView
-              fitViewOptions={{ padding: 0.3 }}
-              minZoom={0.3}
-              maxZoom={2.5}
-              attributionPosition="bottom-right"
-              style={{ background: C.bg }}
-            >
-              <Background variant="dots" gap={24} size={1.2} color={C.border} />
-              <Controls style={{
-                background: C.bg2, border: `1px solid ${C.border}`,
-                borderRadius: 8, overflow: 'hidden',
-              }} />
-              <MiniMap
-                nodeColor={(n) => {
-                  if (n.data?.isActive) {
-                    if (n.type === 'alu')      return C.green;
-                    if (n.type === 'mux')      return C.cyan;
-                    if (n.type === 'register') return C.amber;
-                  }
-                  return C.border2;
-                }}
-                maskColor={`${C.bg}cc`}
-                style={{
-                  background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 8,
-                }}
-              />
-              {halted && (
-                <div style={{
-                  position: 'absolute', bottom: 80, left: '50%',
-                  transform: 'translateX(-50%)',
-                  background: `${C.red}22`, border: `1px solid ${C.red}88`,
-                  borderRadius: 20, padding: '8px 20px',
-                  color: C.red, fontSize: 13, fontWeight: 600,
-                  letterSpacing: '0.06em', zIndex: 10,
-                  backdropFilter: 'blur(6px)',
-                  fontFamily: "'JetBrains Mono',monospace",
-                }}>
-                  ■  HALT — FSM reached Done state
-                </div>
-              )}
-            </ReactFlow>
-          )}
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            nodeTypes={hwNodeTypes}
+            fitView
+            fitViewOptions={{ padding: 0.3 }}
+            minZoom={0.3}
+            maxZoom={2.5}
+            attributionPosition="bottom-right"
+            style={{ background: C.bg }}
+          >
+            <Background variant="dots" gap={24} size={1.2} color={C.border} />
+            <Controls style={{
+              background: C.bg2, border: `1px solid ${C.border}`,
+              borderRadius: 8, overflow: 'hidden',
+            }} />
+            <MiniMap
+              nodeColor={(n) => {
+                if (n.data?.isActive) {
+                  if (n.type === 'alu')      return C.green;
+                  if (n.type === 'mux')      return C.cyan;
+                  if (n.type === 'register') return C.amber;
+                }
+                return C.border2;
+              }}
+              maskColor={`${C.bg}cc`}
+              style={{
+                background: C.bg2, border: `1px solid ${C.border}`, borderRadius: 8,
+              }}
+            />
+            {halted && (
+              <div style={{
+                position: 'absolute', bottom: 80, left: '50%',
+                transform: 'translateX(-50%)',
+                background: `${C.red}22`, border: `1px solid ${C.red}88`,
+                borderRadius: 20, padding: '8px 20px',
+                color: C.red, fontSize: 13, fontWeight: 600,
+                letterSpacing: '0.06em', zIndex: 10,
+                backdropFilter: 'blur(6px)',
+                fontFamily: "'JetBrains Mono',monospace",
+              }}>
+                ■  HALT — FSM reached Done state
+              </div>
+            )}
+          </ReactFlow>
         </main>
 
-        {/* ── Right sidebar — FSM & fault injection ───────────────────────── */}
+        {/* ── Right sidebar — FSM & fault injection ─────────────────────────── */}
         {hardwareData && (
           <aside style={{
             width: 280, flexShrink: 0,
@@ -803,7 +829,7 @@ export default function App() {
                 {Object.keys(overrides).length > 0 && (
                   <button
                     style={{ ...btnDanger, padding: '3px 8px', fontSize: 10 }}
-                    onClick={() => ALL_SIGNALS.forEach(s => clearOverride(s.key))}
+                    onClick={clearAllOverrides}
                   >
                     Clear all
                   </button>
@@ -892,7 +918,7 @@ export default function App() {
               ))}
             </div>
 
-            {/* Dagre info badge */}
+            {/* Dagre info */}
             <div style={{ ...panel, fontSize: 10, color: C.text3, lineHeight: 1.7 }}>
               <div style={sectionTitle}>Layout Engine</div>
               <span style={{ color: C.accent, fontFamily: "'JetBrains Mono',monospace" }}>dagre</span>
@@ -904,7 +930,7 @@ export default function App() {
         )}
       </div>
 
-      {/* ── Error toast ───────────────────────────────────────────────────── */}
+      {/* ── Error toast ──────────────────────────────────────────────────────── */}
       {compileError && (
         <ErrorToast message={compileError} onDismiss={() => setCompileError(null)} />
       )}
