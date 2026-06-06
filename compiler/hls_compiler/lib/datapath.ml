@@ -1,34 +1,45 @@
 (* lib/datapath.ml *)
 open Ast
 
-(* ---------------------------------------------------------------------------
-   Physical RTL component taxonomy
-   ---------------------------------------------------------------------------
-   Register v        – standard D flip-flop bank storing variable [v]
-   ShiftRegister v   – register whose primary write path is a right-shift
-                       operation; maps to an SREG primitive in the backend
-   Mux inputs        – N-to-1 data-selector feeding a register or ALU input
-   ALU op            – combinational arithmetic / logic unit for [op]
-   Comparator id     – dedicated comparator exposing named status wires;
-                       [id] is the variable it watches (e.g. "e")
-   Constant i        – hardwired literal value
-   --------------------------------------------------------------------------- *)
+(* ─────────────────────────────────────────────────────────────────────────────
+   RTL Component taxonomy
+   ─────────────────────────────────────────────────────────────────────────────
+   Every component maps 1-to-1 onto a primitive in the generated netlist.
+
+   Register v        – edge-triggered D flip-flop bank for variable [v].
+                       Receives a load-enable signal (Ld_<v>) from the FSM.
+   Mux inputs        – N-to-1 data selector feeding a Register or ALU input.
+                       Receives a select signal (MuxSel_<v>) from the FSM.
+                       Allocated automatically whenever a variable is written
+                       from more than one source expression.
+   ALU op            – combinational functional unit implementing [op].
+                       One ALU is instantiated per unique operator that appears
+                       in any assignment in the program.
+   Comparator var    – dedicated 1-bit output unit watching Register [var].
+                       Allocated for every variable that feeds a conditional
+                       expression (If / While / For guard).  Exposes a generic
+                       status wire ("cmp_<var>") to the FSM.
+   Constant i        – hardwired literal; no storage needed.
+
+   Note: ShiftRegister is no longer a special primitive.  A right-shift is
+   modelled as a generic ALU(Shr) whose output feeds a standard Register.
+   This is functionally equivalent and avoids hard-coding any algorithm.
+   ───────────────────────────────────────────────────────────────────────────── *)
 type component_type =
-  | Register      of string        (* variable name *)
-  | ShiftRegister of string        (* variable name – written via Shr *)
-  | Mux           of string list   (* list of logical input port names *)
-  | ALU           of op            (* operation this unit implements *)
-  | Comparator    of string        (* variable whose value is inspected *)
-  | Constant      of int
+  | Register    of string        (* variable name                         *)
+  | Mux         of int           (* fan-in (number of input ports)        *)
+  | ALU         of op            (* operation this unit implements        *)
+  | Comparator  of string        (* variable name this unit watches       *)
+  | Constant    of int           (* literal value                         *)
 
 type component = {
   id   : string;
   kind : component_type;
 }
 
-(* A directed wire between two component ports *)
+(* A directed data wire between two component ports *)
 type connection = {
-  src  : string;
+  src  : string;   (* "CompId.port" or just "CompId" for single-output units *)
   dest : string;
 }
 
@@ -37,208 +48,273 @@ type t = {
   connections : connection list;
 }
 
-(* ---------------------------------------------------------------------------
+(* ─────────────────────────────────────────────────────────────────────────────
    AST analysis helpers
-   --------------------------------------------------------------------------- *)
+   ───────────────────────────────────────────────────────────────────────────── *)
 
-(* Return true iff the top-level operation of [expr] is a right-shift.
-   We inspect only the outermost node; nested shifts still store their
-   *result* in a normal register (the shift ALU is a separate component). *)
-let expr_is_shr = function
-  | BinOp (Shr, _, _) -> true
-  | _                 -> false
-
-(* Collect (variable_name, expr list) for every assignment in the program,
-   including those nested inside If / For / While blocks. *)
+(* Collect (variable_name × expr list) for every assignment reachable in the
+   AST, including those inside nested If / For / While blocks.
+   The expr list records every distinct source expression written to that var. *)
 let analyze_assignments block =
   let rec walk acc = function
-    | [] -> acc
-    | Assign (id, expr) :: rest ->
-        let existing =
-          match List.assoc_opt id acc with Some s -> s | None -> []
-        in
-        let acc' = (id, expr :: existing) :: List.remove_assoc id acc in
+    | []                          -> acc
+    | Assign (id, expr) :: rest   ->
+        let prev  = Option.value ~default:[] (List.assoc_opt id acc) in
+        let acc'  = (id, expr :: prev) :: List.remove_assoc id acc in
         walk acc' rest
-    | If (_, tb, fb) :: rest ->
-        walk (walk (walk acc tb) fb) rest
-    | For (_, _, _, body) :: rest ->
-        walk (walk acc body) rest
-    | While (_, body) :: rest ->
-        walk (walk acc body) rest
+    | If (_, tb, fb) :: rest      -> walk (walk (walk acc tb) fb) rest
+    | For (v, init, _, body) :: rest ->
+        (* Treat the loop-variable initialisation as a synthetic assignment *)
+        walk (walk (walk acc [Assign (v, init)]) body) rest
+    | While (_, body) :: rest     -> walk (walk acc body) rest
+    | Return _ :: rest            -> walk acc rest
   in
   walk [] block
 
-(* Decide whether a variable ever appears on the RHS of a shift that writes
-   to *itself* – i.e. [e = e >> 1].  We do this by checking whether any of
-   its source expressions is a Shr node. *)
-let any_source_is_shr sources = List.exists expr_is_shr sources
-
-(* ---------------------------------------------------------------------------
-   Comparator inference
-   ---------------------------------------------------------------------------
-   For the Square-and-Multiply algorithm we always need a comparator on the
-   exponent variable.  We detect the "exponent" heuristically: it is the
-   variable that is (a) written by a Shr operation and (b) appears in a
-   branch condition using Gt / Lt / Eq.
-   
-   For generality we collect every variable that feeds a comparison anywhere
-   in the program; we then intersect with shift-register candidates. *)
-let collect_compared_vars block =
-  let rec walk_expr acc = function
-    | BinOp ((Eq | Lt | Gt), Var v, _) -> v :: acc
-    | BinOp ((Eq | Lt | Gt), _, Var v) -> v :: acc
-    | BinOp (_, e1, e2) -> walk_expr (walk_expr acc e1) e2
-    | _ -> acc
+(* Collect every operator that appears anywhere in the program (recursively). *)
+let collect_operators block =
+  let seen = Hashtbl.create 16 in
+  let add op = Hashtbl.replace seen op () in
+  let rec walk_expr = function
+    | Const _ | Var _ -> ()
+    | BinOp (op, e1, e2) -> add op; walk_expr e1; walk_expr e2
   in
-  let rec walk_stmts acc = function
-    | [] -> acc
-    | Assign (_, e) :: rest           -> walk_stmts (walk_expr acc e) rest
-    | If (cond, tb, fb) :: rest       ->
-        let acc' = walk_expr acc cond in
-        walk_stmts (walk_stmts (walk_stmts acc' tb) fb) rest
-    | For (_, s, stop, body) :: rest  ->
-        let acc' = walk_expr (walk_expr acc s) stop in
-        walk_stmts (walk_stmts acc' body) rest
-    | While (cond, body) :: rest      ->
-        let acc' = walk_expr acc cond in
-        walk_stmts (walk_stmts acc' body) rest
+  let rec walk_stmts = function
+    | []                       -> ()
+    | Assign (_, e)  :: rest   -> walk_expr e; walk_stmts rest
+    | If (c, tb, fb) :: rest   -> walk_expr c; walk_stmts tb; walk_stmts fb; walk_stmts rest
+    | For (_, s, stop, b) :: rest -> walk_expr s; walk_expr stop; walk_stmts b; walk_stmts rest
+    | While (c, b)   :: rest   -> walk_expr c; walk_stmts b; walk_stmts rest
+    | Return e       :: rest   -> walk_expr e; walk_stmts rest
   in
-  walk_stmts [] block
+  walk_stmts block;
+  Hashtbl.fold (fun op () acc -> op :: acc) seen []
 
-(* ---------------------------------------------------------------------------
+(* Collect every variable name that appears in any conditional position
+   (If condition, While guard, For bound) throughout the program.
+   These variables may need a hardware Comparator. *)
+let collect_condition_vars block =
+  (* Extract variable names referenced directly in a comparison expression *)
+  let rec vars_in_cond acc = function
+    | BinOp ((Eq | NEq | Lt | Lte | Gt | Gte), e1, e2) ->
+        let rec vars_of = function
+          | Var v            -> [v]
+          | BinOp (_, a, b)  -> vars_of a @ vars_of b
+          | Const _          -> []
+        in
+        acc @ vars_of e1 @ vars_of e2
+    | BinOp (_, e1, e2) -> vars_in_cond (vars_in_cond acc e1) e2
+    | _                  -> acc
+  in
+  let rec walk acc = function
+    | []                           -> acc
+    | Assign _         :: rest     -> walk acc rest
+    | If (cond, tb, fb) :: rest    ->
+        walk (walk (walk (vars_in_cond acc cond) tb) fb) rest
+    | For (_, s, stop, b) :: rest  ->
+        walk (walk (vars_in_cond (vars_in_cond acc s) stop) b) rest
+    | While (cond, b)  :: rest     ->
+        walk (walk (vars_in_cond acc cond) b) rest
+    | Return _         :: rest     -> walk acc rest
+  in
+  walk [] block
+
+(* ─────────────────────────────────────────────────────────────────────────────
+   Connection inference
+   ─────────────────────────────────────────────────────────────────────────────
+   We walk each assignment expression and emit wires from source components
+   (Registers, Constants, ALU outputs) to destination ALU inputs and Registers.
+   The traversal is recursive so nested expressions chain ALUs correctly.
+   ───────────────────────────────────────────────────────────────────────────── *)
+
+let string_of_op = function
+  | Add  -> "Add"  | Sub  -> "Sub"  | Mul  -> "Mul"
+  | Div  -> "Div"  | Mod  -> "Mod"
+  | Shl  -> "Shl"  | Shr  -> "Shr"  | Sar  -> "Sar"
+  | BAnd -> "BAnd" | BOr  -> "BOr"  | BXor -> "BXor"
+  | Eq   -> "Eq"   | NEq  -> "NEq"
+  | Lt   -> "Lt"   | Lte  -> "Lte"
+  | Gt   -> "Gt"   | Gte  -> "Gte"
+
+(* For a given expression return the component id whose output carries the
+   value of that expression, generating intermediate connection records as a
+   side-effect.  [conns] is an accumulator (reversed). *)
+let rec infer_connections_for_expr expr conns =
+  match expr with
+  | Const i ->
+      let id = Printf.sprintf "Const_%d" i in
+      id, conns
+  | Var v ->
+      let id = "Reg_" ^ v in
+      id, conns
+  | BinOp (op, e1, e2) ->
+      let alu_id    = "ALU_" ^ string_of_op op in
+      let src1, c1  = infer_connections_for_expr e1 conns in
+      let src2, c2  = infer_connections_for_expr e2 c1 in
+      let wire1     = { src = src1; dest = alu_id ^ ".in0" } in
+      let wire2     = { src = src2; dest = alu_id ^ ".in1" } in
+      alu_id, wire2 :: wire1 :: c2
+
+let infer_connections assignments =
+  List.fold_left (fun acc_conns (var_name, sources) ->
+    let dest_id =
+      if List.length sources > 1
+      then "Mux_" ^ var_name   (* goes through mux before register *)
+      else "Reg_" ^ var_name
+    in
+    List.fold_left (fun conns src_expr ->
+      let src_id, conns' = infer_connections_for_expr src_expr conns in
+      { src = src_id; dest = dest_id } :: conns'
+    ) acc_conns sources
+  ) [] assignments
+
+(* ─────────────────────────────────────────────────────────────────────────────
    Core allocation pass
-   ---------------------------------------------------------------------------
+   ─────────────────────────────────────────────────────────────────────────────
    Strategy
-   --------
-   1.  Walk the AST once to collect all (var -> [source exprs]) pairs.
-   2.  For each variable decide its storage component type:
-         – ShiftRegister  if any write to it is a Shr expression
-         – Register       otherwise
-       If a variable has >1 distinct write sites a Mux is added in front.
-   3.  For every variable that is BOTH a ShiftRegister AND appears in a
-       comparison, allocate a shared Comparator component.  The comparator
-       exposes two status wires:
-         eqz    – high when the variable equals zero  (controls loop exit)
-         is_odd – high when LSB is 1                  (controls if-branch)
-   --------------------------------------------------------------------------- *)
+   ─────────
+   1. Walk the AST to collect (var → [source exprs]) and the full operator set.
+   2. Allocate one Register per variable.
+      Add a Mux in front of any register that has more than one write site.
+   3. Allocate one ALU per distinct operator that appears in any expression.
+      ALUs are shared across all uses of the same operator (resource sharing).
+   4. Allocate a Comparator for every variable that feeds a conditional.
+   5. Allocate a Constant component for every distinct integer literal.
+   6. Infer wiring between components from the assignment expressions.
+   ───────────────────────────────────────────────────────────────────────────── *)
+
 let allocate ast =
-  let assignments     = analyze_assignments ast in
-  let compared        = collect_compared_vars ast in
+  let assignments = analyze_assignments ast in
+  let operators   = collect_operators   ast in
+  let cond_vars   = collect_condition_vars ast in
 
-  (* Pass 1 – storage + mux components *)
+  (* ── Registers & Muxes ── *)
   let storage_components =
-    List.fold_left (fun acc (var_name, sources) ->
-      let needs_mux   = List.length sources > 1 in
-      let is_shift    = any_source_is_shr sources in
-
-      (* Primary storage element *)
-      let store_kind  =
-        if is_shift then ShiftRegister var_name
-        else             Register      var_name
-      in
-      let store_id    = (if is_shift then "SReg_" else "Reg_") ^ var_name in
-      let store_comp  = { id = store_id; kind = store_kind } in
-
-      if needs_mux then
-        let port_names = List.init (List.length sources)
-                           (fun i -> "in" ^ string_of_int i) in
-        let mux_comp = { id = "Mux_" ^ var_name;
-                         kind = Mux port_names } in
-        store_comp :: mux_comp :: acc
+    List.concat_map (fun (var_name, sources) ->
+      let reg  = { id = "Reg_" ^ var_name; kind = Register var_name } in
+      if List.length sources > 1 then
+        let mux = { id = "Mux_" ^ var_name; kind = Mux (List.length sources) } in
+        [ reg; mux ]
       else
-        store_comp :: acc
-    ) [] assignments
-  in
-
-  (* Pass 2 – comparator components.
-     Emit one Comparator per variable that is a shift-register AND feeds a
-     comparison.  In Square-and-Multiply this will be exactly 'e'. *)
-  let shift_vars =
-    List.filter_map (fun (var_name, sources) ->
-      if any_source_is_shr sources then Some var_name else None
+        [ reg ]
     ) assignments
   in
-  let comparator_components =
-    List.filter_map (fun var_name ->
-      if List.mem var_name compared then
-        Some { id = "Cmp_" ^ var_name; kind = Comparator var_name }
-      else
-        None
-    ) shift_vars
+
+  (* ── ALUs: one per unique operator ── *)
+  let alu_components =
+    List.map (fun op ->
+      { id = "ALU_" ^ string_of_op op; kind = ALU op }
+    ) operators
   in
 
-  let components = storage_components @ comparator_components in
-  { components; connections = [] }
+  (* ── Comparators: one per variable appearing in any condition ── *)
+  let all_reg_vars = List.map fst assignments in
+  let comparator_components =
+    let unique_cond_vars =
+      List.sort_uniq String.compare
+        (List.filter (fun v -> List.mem v all_reg_vars) cond_vars)
+    in
+    List.map (fun v ->
+      { id = "Cmp_" ^ v; kind = Comparator v }
+    ) unique_cond_vars
+  in
 
-(* ---------------------------------------------------------------------------
+  (* ── Constants: one per distinct literal in the entire program ── *)
+  let collect_constants block =
+    let tbl = Hashtbl.create 8 in
+    let rec walk_expr = function
+      | Const i           -> Hashtbl.replace tbl i ()
+      | Var _             -> ()
+      | BinOp (_, e1, e2) -> walk_expr e1; walk_expr e2
+    in
+    let rec walk_stmts = function
+      | []                       -> ()
+      | Assign (_, e)  :: rest   -> walk_expr e; walk_stmts rest
+      | If (c, tb, fb) :: rest   -> walk_expr c; walk_stmts tb; walk_stmts fb; walk_stmts rest
+      | For (_, s, st, b) :: rest -> walk_expr s; walk_expr st; walk_stmts b; walk_stmts rest
+      | While (c, b)   :: rest   -> walk_expr c; walk_stmts b; walk_stmts rest
+      | Return e       :: rest   -> walk_expr e; walk_stmts rest
+    in
+    walk_stmts block;
+    Hashtbl.fold (fun i () acc -> i :: acc) tbl []
+  in
+  let constant_components =
+    List.map (fun i ->
+      { id = Printf.sprintf "Const_%d" i; kind = Constant i }
+    ) (collect_constants ast)
+  in
+
+  let components =
+    storage_components @ alu_components @ comparator_components @ constant_components
+  in
+
+  (* ── Connections ── *)
+  let raw_conns = infer_connections assignments in
+  (* Deduplicate: same (src, dest) pair may appear from multiple analysis paths *)
+  let connections =
+    List.sort_uniq (fun a b ->
+      let c = String.compare a.src b.src in
+      if c <> 0 then c else String.compare a.dest b.dest
+    ) raw_conns
+  in
+
+  { components; connections }
+
+(* ─────────────────────────────────────────────────────────────────────────────
    Printer
-   --------------------------------------------------------------------------- *)
-let string_of_op = function
-  | Add -> "Add" | Sub -> "Sub" | Mul -> "Mul"
-  | Eq  -> "Eq"  | Lt  -> "Lt"  | Gt  -> "Gt"
-  | Shr -> "Shr" | Mod -> "Mod"
+   ───────────────────────────────────────────────────────────────────────────── *)
 
 let print_datapath dp =
   Printf.printf "\n--- GENERATED DATAPATH (RTL STRUCTURE) ---\n";
   List.iter (fun c ->
     match c.kind with
     | Register v ->
-        Printf.printf "Component: Register        [%s]\n" v
-    | ShiftRegister v ->
-        Printf.printf "Component: ShiftRegister   [%s]  (driven by >> unit)\n" v
-    | Mux inputs ->
-        (* Strip leading prefix before the first '_' to recover var name *)
-        let after_first_underscore s =
-          match String.index_opt s '_' with
-          | Some i -> String.sub s (i + 1) (String.length s - i - 1)
-          | None   -> s
-        in
-        Printf.printf "Component: %d-to-1 Mux     [Targeting %s]\n"
-          (List.length inputs) (after_first_underscore c.id)
+        Printf.printf "  Register    [Reg_%-12s]  ← stores variable '%s'\n" v v
+    | Mux n ->
+        let var = String.sub c.id 4 (String.length c.id - 4) in
+        Printf.printf "  Mux         [%-16s]  %d-to-1 selector → Reg_%s\n"
+          c.id n var
     | ALU op ->
-        Printf.printf "Component: ALU             [%s]\n" (string_of_op op)
+        Printf.printf "  ALU         [%-16s]  implements '%s'\n"
+          c.id (string_of_op op)
     | Comparator v ->
-        Printf.printf
-          "Component: Comparator      [watching %s] \
-           (status wires: eqz => loop-exit, is_odd => if-branch)\n" v
+        Printf.printf "  Comparator  [%-16s]  watches Reg_%s → status wire cmp_%s\n"
+          c.id v v
     | Constant i ->
-        Printf.printf "Component: Constant        [%d]\n" i
-  ) dp.components
+        Printf.printf "  Constant    [%-16s]  hardwired value %d\n" c.id i
+  ) dp.components;
+  if dp.connections <> [] then begin
+    Printf.printf "\n  Connections:\n";
+    List.iter (fun w ->
+      Printf.printf "    %s → %s\n" w.src w.dest
+    ) dp.connections
+  end
 
-(* ---------------------------------------------------------------------------
-   JSON serialisation helper (used by export.ml)
-   --------------------------------------------------------------------------- *)
+(* ─────────────────────────────────────────────────────────────────────────────
+   JSON serialisation  (consumed by export.ml and the React visualiser)
+   ───────────────────────────────────────────────────────────────────────────── *)
+
 let json_of_component c =
   match c.kind with
   | Register v ->
       Printf.sprintf
         {|{"id": "Reg_%s", "type": "Register", "label": "%s"}|} v v
-  | ShiftRegister v ->
+  | Mux n ->
+      let var = String.sub c.id 4 (String.length c.id - 4) in
       Printf.sprintf
-        {|{"id": "SReg_%s", "type": "ShiftRegister", "label": "%s (>>)"}|} v v
-  | Mux inputs ->
-      (* recover the target variable name from the component id "Mux_<var>" *)
-      let var_name =
-        let pfx = "Mux_" in
-        let plen = String.length pfx in
-        if String.length c.id > plen then
-          String.sub c.id plen (String.length c.id - plen)
-        else c.id
-      in
-      (* decide whether the target is a ShiftRegister by looking at id prefix *)
-      let target_id = "Reg_" ^ var_name in
-      Printf.sprintf
-        {|{"id": "%s", "type": "Mux", "inputs": %d, "target": "%s"}|}
-        c.id (List.length inputs) target_id
+        {|{"id": "%s", "type": "Mux", "inputs": %d, "target": "Reg_%s"}|}
+        c.id n var
   | ALU op ->
       Printf.sprintf
         {|{"id": "ALU_%s", "type": "ALU", "operation": "%s"}|}
         (string_of_op op) (string_of_op op)
   | Comparator v ->
       Printf.sprintf
-        {|{"id": "Cmp_%s", "type": "Comparator", "watches": "%s", |}
-        v v
-      ^ {|"status_wires": ["eqz", "is_odd"]}|}
+        {|{"id": "Cmp_%s", "type": "Comparator", "watches": "Reg_%s", "status_wire": "cmp_%s"}|}
+        v v v
   | Constant i ->
       Printf.sprintf
         {|{"id": "Const_%d", "type": "Constant", "value": %d}|} i i
+
+let json_of_connection w =
+  Printf.sprintf {|{"src": "%s", "dest": "%s"}|} w.src w.dest

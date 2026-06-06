@@ -1,33 +1,52 @@
 (* lib/ast.ml *)
 
-(* Expanded to include comparators for if-statements and loops,
-   plus bitwise/modulo operators for the Square-and-Multiply algorithm. *)
-type op = 
-  | Add  (* Maps to hardware Adder *)
-  | Sub  (* Maps to hardware Subtractor *)
-  | Mul  (* Maps to hardware Multiplier *)
-  | Eq   (* Maps to Comparator (==) *)
-  | Lt   (* Maps to Comparator (<) *)
-  | Gt   (* Maps to Comparator (>) *)
-  | Shr  (* Maps to Arithmetic Right-Shift unit (>>) *)
-  | Mod  (* Maps to Modulo / AND unit (%) *)
+(* ─────────────────────────────────────────────────────────────────────────────
+   Generic Binary Operator set.
+   Every entry maps directly to a canonical RTL primitive; no operator is tied
+   to any particular algorithm or usage pattern.
 
+   Arithmetic   : Add, Sub, Mul, Div, Mod
+   Shift        : Shl (logical left), Shr (logical right), Sar (arithmetic right)
+   Bitwise      : BAnd, BOr, BXor, BNot (unary — encoded as BinOp with dummy rhs)
+   Comparison   : Eq, NEq, Lt, Lte, Gt, Gte   →  output is a 1-bit predicate
+   ───────────────────────────────────────────────────────────────────────────── *)
+type op =
+  | Add                  (* +  → Adder unit            *)
+  | Sub                  (* -  → Subtractor unit        *)
+  | Mul                  (* *  → Multiplier unit        *)
+  | Div                  (* /  → Divider unit           *)
+  | Mod                  (* %  → Modulo / remainder     *)
+  | Shl                  (* << → Left-shift unit        *)
+  | Shr                  (* >> → Right-shift unit       *)
+  | Sar                  (* >>> → Arithmetic right-shift *)
+  | BAnd                 (* &  → Bitwise AND            *)
+  | BOr                  (* |  → Bitwise OR             *)
+  | BXor                 (* ^  → Bitwise XOR            *)
+  | Eq                   (* == → Comparator (equal)     *)
+  | NEq                  (* != → Comparator (not equal) *)
+  | Lt                   (* <  → Comparator (less-than) *)
+  | Lte                  (* <= → Comparator (≤)         *)
+  | Gt                   (* >  → Comparator (greater)   *)
+  | Gte                  (* >= → Comparator (≥)         *)
+
+(* ─────────────────────────────────────────────────────────────────────────────
+   Expression language — pure and side-effect-free.
+   ───────────────────────────────────────────────────────────────────────────── *)
 type expr =
-  | Var of string
-  | Const of int
-  | BinOp of op * expr * expr
+  | Var    of string                  (* variable reference              *)
+  | Const  of int                     (* integer literal                 *)
+  | BinOp  of op * expr * expr        (* binary operator application     *)
 
-(* A program block is a list of statements *)
+(* ─────────────────────────────────────────────────────────────────────────────
+   Statement / control-flow language.
+   A program is a flat [block] (list of statements); control structures nest
+   by embedding sub-blocks.
+   ───────────────────────────────────────────────────────────────────────────── *)
 type block = stmt list
 
-and stmt = 
-  | Assign of string * expr
-  
-  (* if (condition) { true_block } else { false_block } *)
-  | If of expr * block * block 
-  
-  (* for (iterator = start; iterator < end) { loop_block } *)
-  | For of string * expr * expr * block
-
-  (* while (condition) { loop_block } *)
-  | While of expr * block
+and stmt =
+  | Assign of string * expr                        (* id = expr;                        *)
+  | If     of expr * block * block                 (* if (cond) { … } else { … }        *)
+  | For    of string * expr * expr * block         (* for (id = start; id < stop) { … } *)
+  | While  of expr * block                         (* while (cond) { … }                *)
+  | Return of expr                                  (* return expr;  (optional)          *)

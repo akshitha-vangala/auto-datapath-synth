@@ -46,20 +46,39 @@ app.post("/synthesize", async (req, res) => {
 
   // 2. Run the compiler inside the compiler directory
   const runCompiler = () =>
-    new Promise((resolve, reject) => {
-      exec("dune exec hls_compiler", { cwd: COMPILER_DIR }, (error, stdout, stderr) => {
-        if (error) {
-          // Attach stderr so the caller can surface the compiler's diagnostics
-          const enriched = new Error(stderr || stdout || error.message);
-          enriched.stderr = stderr;
-          enriched.stdout = stdout;
-          reject(enriched);
-        } else {
-          resolve({ stdout, stderr });
+  new Promise((resolve, reject) => {
+    const opamEnv = { ...process.env };
+
+    opamEnv["OPAM_SWITCH_PREFIX"] = "C:\\Users\\akshi\\AppData\\Local\\opam\\default";
+    opamEnv["OCAMLTOP_INCLUDE_PATH"] = "C:\\Users\\akshi\\AppData\\Local\\opam\\default\\lib\\toplevel";
+    opamEnv["CAML_LD_LIBRARY_PATH"] = "C:\\Users\\akshi\\AppData\\Local\\opam\\default\\lib\\stublibs;C:\\Users\\akshi\\AppData\\Local\\opam\\default\\lib\\ocaml\\stublibs;C:\\Users\\akshi\\AppData\\Local\\opam\\default\\lib\\ocaml";
+    opamEnv["OCAML_TOPLEVEL_PATH"] = "C:\\Users\\akshi\\AppData\\Local\\opam\\default\\lib\\toplevel";
+    opamEnv["Path"] = "C:\\Users\\akshi\\AppData\\Local\\opam\\default\\bin;C:\\Users\\akshi\\AppData\\Local\\opam\\.cygwin\\root\\usr\\x86_64-w64-mingw32\\sys-root\\mingw\\bin;" + process.env.Path;
+
+    const DUNE = "C:/Users/akshi/AppData/Local/opam/default/bin/dune.exe";
+    const opts = { cwd: COMPILER_DIR, env: opamEnv };
+
+    // Step 1: dune build
+    exec(`"${DUNE}" build`, opts, (buildError, buildStdout, buildStderr) => {
+      if (buildError) {
+        const enriched = new Error(buildStderr || buildStdout || buildError.message);
+        enriched.stderr = buildStderr;
+        enriched.stdout = buildStdout;
+        return reject(enriched);
+      }
+
+      // Step 2: dune exec (only if build succeeded)
+      exec(`"${DUNE}" exec hls_compiler`, opts, (execError, execStdout, execStderr) => {
+        if (execError) {
+          const enriched = new Error(execStderr || execStdout || execError.message);
+          enriched.stderr = execStderr;
+          enriched.stdout = execStdout;
+          return reject(enriched);
         }
+        resolve({ stdout: execStdout, stderr: execStderr });
       });
     });
-
+  });
   try {
     await runCompiler();
   } catch (compileErr) {

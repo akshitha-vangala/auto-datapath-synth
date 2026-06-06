@@ -4,44 +4,57 @@
   exception SyntaxError of string
 }
 
-let white = [' ' '\t']+
+let white   = [' ' '\t']+
 let newline = '\r' | '\n' | "\r\n"
-let id = ['a'-'z' 'A'-'Z' '_'] ['a'-'z' 'A'-'Z' '0'-'9' '_']*
-let int = ['0'-'9']+
+let id      = ['a'-'z' 'A'-'Z' '_'] ['a'-'z' 'A'-'Z' '0'-'9' '_']*
+let int     = ['0'-'9']+
 
 rule read = parse
   | white    { read lexbuf }
   | newline  { Lexing.new_line lexbuf; read lexbuf }
-  
-  (* Keywords must come BEFORE the 'id' rule *)
+  (* single-line comments *)
+  | "//" [^ '\n']* { read lexbuf }
+
+  (* Keywords — must precede the generic [id] rule *)
   | "if"     { IF }
   | "else"   { ELSE }
   | "for"    { FOR }
   | "while"  { WHILE }
-  
+  | "return" { RETURN }
+
   | int      { INT (int_of_string (Lexing.lexeme lexbuf)) }
   | id       { IDENT (Lexing.lexeme lexbuf) }
-  
-  (* Multi-character operators MUST be matched before single-char prefixes.
-     ">>" must be tried before ">", "==" must be tried before "=". *)
-  | "=="     { EQ }
+
+  (* Multi-char operators must appear before their single-char prefixes *)
+  | "=="     { EQEQ }
+  | "!="     { NEQ }
+  | "<="     { LTE }
+  | ">="     { GTE }
   | ">>"     { SHR }
+  | ">>>"    { SAR }
+  | "<<"     { SHL }
   | "<"      { LT }
   | ">"      { GT }
   | "="      { EQUALS }
-  
-  (* Math & Logic *)
+  | "&&"     { BAND }
+  | "||"     { BOR }
+  | "^"      { BXOR }
+  | "&"      { AMP }
+  | "|"      { PIPE }
+
+  (* Arithmetic *)
   | "+"      { PLUS }
   | "-"      { MINUS }
   | "*"      { STAR }
+  | "/"      { SLASH }
   | "%"      { PERCENT }
-  
-  (* Syntax & Brackets *)
+
+  (* Punctuation *)
   | ";"      { SEMICOLON }
   | "("      { LPAREN }
   | ")"      { RPAREN }
   | "{"      { LBRACE }
   | "}"      { RBRACE }
-  
+
   | eof      { EOF }
-  | _        { raise (SyntaxError ("Unexpected char: " ^ Lexing.lexeme lexbuf)) }
+  | _        { raise (SyntaxError ("Unexpected character: '" ^ Lexing.lexeme lexbuf ^ "'")) }

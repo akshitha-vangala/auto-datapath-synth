@@ -1,8 +1,6 @@
-// Square-and-Multiply — modular exponentiation kernel
-// Inputs:  r (accumulator), b (base), e (exponent), i (counter)
-// Outputs: r  (result after 8 iterations)
 
 while (i < 8) {
+  r = r * r;
  
   i = i + 1;
 }
